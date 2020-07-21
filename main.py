@@ -1,9 +1,28 @@
 import wx
+from threading import Thread
+from pubsub import pub
 from control import Control
+import time
+
+AXIS = ['X', 'Y', 'Z']
 
 
 def Empty(parent, proportion, flags):
     return (wx.StaticText(parent), proportion, flags)
+    
+    
+class ControlPollThread(Thread):
+    def __init__(self):
+        super().__init__()
+        self.stop = False
+        self.start()
+        
+    def run(self):
+        while not self.stop:
+            if wx.GetApp() is None:
+                break
+            wx.CallAfter(pub.sendMessage, "poll")
+            time.sleep(1.0)
 
 class MachineControl(wx.Panel):
     def __init__(self, parent, control):
@@ -17,23 +36,73 @@ class MachineControl(wx.Panel):
 
         self.InitUI()
         self.RefreshPorts(None)
+        self.pollThread = None
+        
+        pub.subscribe(self.OnPoll, "poll")
+        
+    def Destroy(self):
+        if self.pollThread is not None:
+            self.pollThread.stop = True
+            self.pollThread.join()
+        
+    def ParsePosition(self, line):
+        if not line.startswith('<'): return False
+        i = line.find('WPos:')
+        if i < 0:
+            i = line.find('MPos:')
+        if i < 0: return False
+
+        split = line[i+5:].split(',')
+        res = []
+        for val in split:
+            end = False
+            if val[-1] == '>':
+                val = val[:-1]
+                end = True
+            try:
+                res.append(float(val))
+            except:
+                break
+            if end: break
+            
+        pos = ''
+        for i in range(min(len(AXIS), len(res))):
+            pos += f'{AXIS[i]}={res[i]:.2f} '
+
+        self.txtPosition.SetLabel(pos)
+        return True
         
     def on_control_send(self, command, gline):
         self.console.AppendText(f'> {command}\n')
     
     def on_control_recv(self, line):
-        self.console.AppendText(f'> {line.strip()}\n')
+        line = line.strip()
+        # if line.startswith('ok'): return
+        # elif self.ParsePosition(line):
+        #     return
+        self.ParsePosition(line)
+        self.console.AppendText(f'{line}\n')
         
-    def on_controller_connect(self):
+    def on_control_connect(self):
         self.console.AppendText('Connected...\n')
+        self.pollThread = ControlPollThread()
     
-    def on_controller_disconnect(self):
+    def on_control_disconnect(self):
+        print(self.console)
         self.console.AppendText('Disconnected...\n')
+        if self.pollThread:
+            self.pollThread.stop = True
         
     def JogClicked(self, event):
         btn = event.GetEventObject()
         axis, d = self.moveBtns[btn]
-        self.control.Jog(axis, 10*d, 3000)
+        if axis == 'Z':
+            dist = self.sbZDist.GetValue()
+            speed = self.sbZSpeed.GetValue()
+        else:
+            dist = self.sbDist.GetValue()
+            speed = self.sbSpeed.GetValue()
+        self.control.Jog(axis, dist*d, speed*60)
     
     def HomeAllClicked(self, event):
         self.control.HomeAll()
@@ -64,6 +133,12 @@ class MachineControl(wx.Panel):
         if port in self.port_map:
             dev = self.port_map[port]
             self.control.Connect(dev)
+            
+    def OnGetPosition(self, event):
+        self.control.Send('?')
+        
+    def OnPoll(self):
+        self.OnGetPosition(None)
 
     def InitUI(self):
         self.SetSizeHints(480, 480)
@@ -71,62 +146,74 @@ class MachineControl(wx.Panel):
         
         flags = wx.EXPAND
         btnSize = (32, 32)
-        home = wx.Button(self, size=btnSize, label='H_XY')
-        home.Bind(wx.EVT_BUTTON, self.HomeAllClicked)
-        self.homeBtns[home] = 'XY'
-        
-        xp = wx.Button(self, size=btnSize, label='X+')
-        xp.Bind(wx.EVT_BUTTON, self.JogClicked)
-        self.moveBtns[xp] = ('X', 1)
-        
-        xm = wx.Button(self, size=btnSize, label='X-')
-        xm.Bind(wx.EVT_BUTTON, self.JogClicked)
-        self.moveBtns[xm] = ('X', -1)
+        gs = wx.GridBagSizer(5,5)
         
         yp = wx.Button(self, size=btnSize, label='Y+')
         yp.Bind(wx.EVT_BUTTON, self.JogClicked)
         self.moveBtns[yp] = ('Y', 1)
+        gs.Add(yp, (0,1))
         
+        xm = wx.Button(self, size=btnSize, label='X-')
+        xm.Bind(wx.EVT_BUTTON, self.JogClicked)
+        self.moveBtns[xm] = ('X', -1)
+        gs.Add(xm, (1,0))
+        
+        home = wx.Button(self, size=btnSize, label='H_XY')
+        home.Bind(wx.EVT_BUTTON, self.HomeAllClicked)
+        self.homeBtns[home] = 'XY'
+        gs.Add(home, (1,1))
+        
+        xp = wx.Button(self, size=btnSize, label='X+')
+        xp.Bind(wx.EVT_BUTTON, self.JogClicked)
+        self.moveBtns[xp] = ('X', 1)
+        gs.Add(xp, (1,2))
+
         ym = wx.Button(self, size=btnSize, label='Y-')
         ym.Bind(wx.EVT_BUTTON, self.JogClicked)
         self.moveBtns[ym] = ('Y', -1)
-        
-        home_z = wx.Button(self, size=btnSize, label='H_Z')
-        home_z.Bind(wx.EVT_BUTTON, self.HomeZClicked)
-        self.homeBtns[home_z] = 'Z'
+        gs.Add(ym, (2,1))
         
         zp = wx.Button(self, size=btnSize, label='Z+')
         zp.Bind(wx.EVT_BUTTON, self.JogClicked)
         self.moveBtns[zp] = ('Z', 1)
+        gs.Add(zp, (0,3))
         
+        home_z = wx.Button(self, size=btnSize, label='H_Z')
+        home_z.Bind(wx.EVT_BUTTON, self.HomeZClicked)
+        self.homeBtns[home_z] = 'Z'
+        gs.Add(home_z, (1,3))
+
         zm = wx.Button(self, size=btnSize, label='Z-')
         zm.Bind(wx.EVT_BUTTON, self.JogClicked)
         self.moveBtns[zm] = ('Z', -1)
+        gs.Add(zm, (2,3))
         
         self.sbDist = wx.SpinCtrlDouble(self, min=0.05, max=500, initial=10.0, inc=10)
         self.sbDist.SetDigits(2)
+        gs.Add(wx.StaticText(self, label='Distance (mm)'), (0, 4), flag=wx.ALIGN_CENTER_VERTICAL)
+        gs.Add(self.sbDist, (0, 5))
+        
         self.sbSpeed = wx.SpinCtrlDouble(self, min=0.1, max=500, initial=100.0, inc=10)
         self.sbSpeed.SetDigits(2)
+        gs.Add(wx.StaticText(self, label='Speed (mm/s)'), (1, 4), flag=wx.ALIGN_CENTER_VERTICAL)
+        gs.Add(self.sbSpeed, (1, 5))
+        
         self.sbZDist = wx.SpinCtrlDouble(self, min=0.01, max=100, initial=1.0, inc=1)
         self.sbZDist.SetDigits(2)
+        gs.Add(wx.StaticText(self, label='Z Distance (mm)'), (2, 4), flag=wx.ALIGN_CENTER_VERTICAL)
+        gs.Add(self.sbZDist, (2, 5))
+        
         self.sbZSpeed = wx.SpinCtrlDouble(self, min=0.1, max=100, initial=10.0, inc=10)
         self.sbZSpeed.SetDigits(2)
+        gs.Add(wx.StaticText(self, label='Z Speed (mm/s)'), (3, 4), flag=wx.ALIGN_CENTER_VERTICAL)
+        gs.Add(self.sbZSpeed, (3, 5))
         
+        self.btnGetPos = wx.Button(self, label='Get Position')
+        self.btnGetPos.Bind(wx.EVT_BUTTON, self.OnGetPosition)
+        gs.Add(self.btnGetPos, (4,0), (0,3), flag=wx.ALIGN_CENTER_HORIZONTAL)
         
-        gs = wx.GridSizer(4,6,5,5)
-        gs.AddMany([
-            Empty(self, 0, flags), (yp, 0, flags),   Empty(self, 0, flags), (zp, 0, flags), 
-                (wx.StaticText(self, label='Distance'), 0, flags), (self.sbDist, 0, flags),
-                
-            (xm, 0, flags),        (home, 0, flags), (xp, 0, flags),        (home_z, 0, flags),
-                (wx.StaticText(self, label='Speed'), 0, flags), (self.sbSpeed, 0, flags),
-                
-            Empty(self, 0, flags), (ym, 0, flags),   Empty(self, 0, flags), (zm, 0, flags),
-                (wx.StaticText(self, label='Z Distance'), 0, flags), (self.sbZDist, 0, flags),
-                
-            Empty(self, 0, flags), Empty(self, 0, flags), Empty(self, 0, flags), Empty(self, 0, flags),
-                (wx.StaticText(self, label='Z Speed'), 0, flags), (self.sbZSpeed, 0, flags),
-        ])
+        self.txtPosition = wx.StaticText(self, label='X=0.0 Y=0.0 Z=0.0')
+        gs.Add(self.txtPosition, (4,3), (0,3), flag=wx.ALIGN_CENTER_VERTICAL)
         
         vbox.Add(gs, proportion=0, flag=wx.TOP, border=5)
         
@@ -134,7 +221,8 @@ class MachineControl(wx.Panel):
         vbox.Add(self.console, proportion=1, flag=wx.EXPAND|wx.TOP, border=5)
         
         inputBox = wx.BoxSizer(wx.HORIZONTAL)
-        self.input = wx.TextCtrl(self)
+        self.input = wx.TextCtrl(self, style=wx.TE_PROCESS_ENTER)
+        self.input.Bind(wx.EVT_TEXT_ENTER, self.SendCommand)
         self.send = wx.Button(self, label='Send')
         self.send.Bind(wx.EVT_BUTTON, self.SendCommand)
         inputBox.Add(self.input, proportion=1, flag=wx.EXPAND|wx.RIGHT, border=5)
@@ -175,6 +263,9 @@ class MainApp(wx.Frame):
 
         self.control = control
         self.InitUI()
+        
+    def __del__(self):
+        self.mc.Destroy() # for cleaning up threads
 
     def InitUI(self):
         self.SetSizeHints(800, 600)
@@ -182,8 +273,8 @@ class MainApp(wx.Frame):
         # self.Centre()
         
         hbox = wx.BoxSizer(wx.HORIZONTAL)
-        self.control = MachineControl(self, self.control)
-        hbox.Add(self.control, proportion=0, flag=wx.EXPAND)
+        self.mc = MachineControl(self, self.control)
+        hbox.Add(self.mc, proportion=0, flag=wx.EXPAND)
         self.notebook = wx.Notebook(self)
         self.notebook.SetSizeHints(640, 480)
         self.camControl = CameraControl(self.notebook)
@@ -196,11 +287,11 @@ def main():
 
     app = wx.App()
     control = Control()
-    ex = MainApp(None, control)
-    ex.Show()
+    ma = MainApp(None, control)
+    ma.Show()
     app.MainLoop()
-    control.Disconnect()
-
+    control.Destory()
+    print('End App')
 
 if __name__ == '__main__':
     main()

@@ -1,3 +1,5 @@
+import logging
+logging.getLogger().setLevel(logging.ERROR) #suppress printcore crap
 import serial, serial.tools.list_ports
 from printrun.printcore import printcore
 
@@ -25,6 +27,10 @@ class Control():
         self.baud = 115200
         self.console_callbacks = {}
         self.cmd_map = SMOO
+        
+    def Destory(self):
+        self.console_callbacks.clear()
+        self.Disconnect()
         
     def RegisterCallbackObject(self, obj):
         self.console_callbacks[obj] = {}
@@ -103,7 +109,7 @@ class Control():
         self.pc.connect(self.dev, self.baud)
         
     def Disconnect(self):
-        if self.pc:
+        if self.Connected():
             self.pc.disconnect()
         
     def GetPorts(self):
