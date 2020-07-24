@@ -2,8 +2,39 @@ import logging
 logging.getLogger().setLevel(logging.ERROR) #suppress printcore crap
 import serial, serial.tools.list_ports
 from printrun.printcore import printcore
+from threading import Thread
+import time
+from pubsub import pub
+import wx
 
-from gcode import SMOO
+from . import events
+from . gcode import SMOO
+
+class StatusPollThread(Thread):
+    def __init__(self):
+        super().__init__()
+        self.stop = False
+        self.pause = True
+        
+        pub.subscribe(self.status_on, "status_on")
+        pub.subscribe(self.status_off, "status_off")
+        self.start()
+        
+    def status_on(self):
+        print('status on')
+        self.pause = False
+        
+    def status_off(self):
+        print('status off')
+        self.pause = True
+        
+    def run(self):
+        while not self.stop:
+            time.sleep(1.0)
+            if self.pause or wx.GetApp() is None:
+                continue
+            wx.CallAfter(pub.sendMessage, "get_status")
+            
 
 CALLBACK_FUNCS = [
     'on_control_send',
@@ -16,6 +47,7 @@ CALLBACK_FUNCS = [
     'on_control_end',
     'on_control_preprintsend',
     'on_control_printsend',
+    'on_control_status',
 ]
 
 class Control():
@@ -23,14 +55,22 @@ class Control():
         self.pr = None
         self.pc = printcore()
         self.pc.addEventHandler(self)
+        
         self.dev = None
         self.baud = 115200
         self.console_callbacks = {}
         self.cmd_map = SMOO
+        self.pos = [0,0,0]
+        
+        self.pollThread = StatusPollThread()
+        pub.subscribe(self.GetStatus, "get_status")
         
     def Destory(self):
         self.console_callbacks.clear()
         self.Disconnect()
+        if self.pollThread is not None:
+            self.pollThread.stop = True
+            self.pollThread.join()
         
     def RegisterCallbackObject(self, obj):
         self.console_callbacks[obj] = {}
@@ -51,11 +91,21 @@ class Control():
         
     def on_send(self, command, gline):
         self.__write("on_send", command)
+        if command == '?': return
         for cb in self.get_callbacks('on_control_send'):
             cb(command, gline)
-    
+            
+    def on_status(self, pos):
+        for cb in self.get_callbacks('on_control_status'):
+            cb(pos)
+            
     def on_recv(self, line):
-        self.__write("on_recv", line.strip())
+        line = line.strip()
+        self.__write("on_recv", line)
+        if line.startswith('ok'): return
+        if self.ParsePosition(line): 
+            self.on_status(self.pos)
+            return
         for cb in self.get_callbacks('on_control_recv'):
             cb(line)
     
@@ -63,11 +113,13 @@ class Control():
         self.__write("on_connect")
         for cb in self.get_callbacks('on_control_connect'):
             cb()
+        events.poll_status_on()
         
     def on_disconnect(self):
         self.__write("on_disconnect")
         for cb in self.get_callbacks('on_control_disconnect'):
             cb()
+        events.poll_status_off()
     
     def on_error(self, error):
         self.__write("on_error", error)
@@ -100,6 +152,35 @@ class Control():
             cb()
 
     #end printcore handler callbacks
+    
+    def ParsePosition(self, line):
+        if not line.startswith('<'): return False
+        i = line.find('WPos:')
+        if i < 0:
+            i = line.find('MPos:')
+        if i < 0: return False
+
+        split = line[i+5:].split(',')
+        res = []
+        for val in split:
+            end = False
+            if val[-1] == '>':
+                val = val[:-1]
+                end = True
+            try:
+                res.append(float(val))
+            except:
+                break
+            if end: break
+            
+        self.pos = []
+        for i in range(len(res)):
+            self.pos.append(float(res[i]))
+            
+        return True
+        
+    def GetStatus(self):
+        self.Send('?')
         
     def Connected(self):
         return self.pc and self.pc.printer

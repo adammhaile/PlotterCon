@@ -1,21 +1,23 @@
 import wx
 from threading import Thread
 from pubsub import pub
-from control import Control
+from . control import Control
 import time
 
 AXIS = ['X', 'Y', 'Z']
 
-
-def Empty(parent, proportion, flags):
-    return (wx.StaticText(parent), proportion, flags)
-    
-    
 class ControlPollThread(Thread):
     def __init__(self):
         super().__init__()
         self.stop = False
+        self.pause = False
         self.start()
+        
+    def status_on(self):
+        self.pause = True
+        
+    def status_off(self):
+        self.pause = False
         
     def run(self):
         while not self.stop:
@@ -36,62 +38,28 @@ class MachineControl(wx.Panel):
 
         self.InitUI()
         self.RefreshPorts(None)
-        self.pollThread = None
         
         pub.subscribe(self.OnPoll, "poll")
         
-    def Destroy(self):
-        if self.pollThread is not None:
-            self.pollThread.stop = True
-            self.pollThread.join()
-        
-    def ParsePosition(self, line):
-        if not line.startswith('<'): return False
-        i = line.find('WPos:')
-        if i < 0:
-            i = line.find('MPos:')
-        if i < 0: return False
+    def on_control_status(self, pos):            
+        spos = ''
+        for i in range(min(len(AXIS), len(pos))):
+            spos += f'{AXIS[i]}={pos[i]:.2f} '
 
-        split = line[i+5:].split(',')
-        res = []
-        for val in split:
-            end = False
-            if val[-1] == '>':
-                val = val[:-1]
-                end = True
-            try:
-                res.append(float(val))
-            except:
-                break
-            if end: break
-            
-        pos = ''
-        for i in range(min(len(AXIS), len(res))):
-            pos += f'{AXIS[i]}={res[i]:.2f} '
-
-        self.txtPosition.SetLabel(pos)
+        self.txtPosition.SetLabel(spos)
         return True
         
     def on_control_send(self, command, gline):
         self.console.AppendText(f'> {command}\n')
     
     def on_control_recv(self, line):
-        line = line.strip()
-        # if line.startswith('ok'): return
-        # elif self.ParsePosition(line):
-        #     return
-        self.ParsePosition(line)
         self.console.AppendText(f'{line}\n')
         
     def on_control_connect(self):
         self.console.AppendText('Connected...\n')
-        self.pollThread = ControlPollThread()
     
     def on_control_disconnect(self):
-        print(self.console)
         self.console.AppendText('Disconnected...\n')
-        if self.pollThread:
-            self.pollThread.stop = True
         
     def JogClicked(self, event):
         btn = event.GetEventObject()
@@ -141,10 +109,9 @@ class MachineControl(wx.Panel):
         self.OnGetPosition(None)
 
     def InitUI(self):
-        self.SetSizeHints(480, 480)
+        self.SetSizeHints(390, 480)
         vbox = wx.BoxSizer(wx.VERTICAL)
         
-        flags = wx.EXPAND
         btnSize = (32, 32)
         gs = wx.GridBagSizer(5,5)
         
@@ -158,7 +125,7 @@ class MachineControl(wx.Panel):
         self.moveBtns[xm] = ('X', -1)
         gs.Add(xm, (1,0))
         
-        home = wx.Button(self, size=btnSize, label='H_XY')
+        home = wx.Button(self, size=btnSize, label='H')
         home.Bind(wx.EVT_BUTTON, self.HomeAllClicked)
         self.homeBtns[home] = 'XY'
         gs.Add(home, (1,1))
@@ -178,7 +145,7 @@ class MachineControl(wx.Panel):
         self.moveBtns[zp] = ('Z', 1)
         gs.Add(zp, (0,3))
         
-        home_z = wx.Button(self, size=btnSize, label='H_Z')
+        home_z = wx.Button(self, size=btnSize, label='H')
         home_z.Bind(wx.EVT_BUTTON, self.HomeZClicked)
         self.homeBtns[home_z] = 'Z'
         gs.Add(home_z, (1,3))
@@ -263,9 +230,6 @@ class MainApp(wx.Frame):
 
         self.control = control
         self.InitUI()
-        
-    def __del__(self):
-        self.mc.Destroy() # for cleaning up threads
 
     def InitUI(self):
         self.SetSizeHints(800, 600)
