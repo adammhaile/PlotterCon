@@ -2,6 +2,7 @@ import wx
 from threading import Thread
 from pubsub import pub
 from . control import Control
+from . camera import CameraControl
 import time
 
 AXIS = ['X', 'Y', 'Z']
@@ -213,15 +214,6 @@ class MachineControl(wx.Panel):
         vbox.Add(connectBox, proportion=0, flag=wx.EXPAND|wx.TOP|wx.BOTTOM, border=5)
         
         self.SetSizer(vbox)
-
-class CameraControl(wx.Panel):
-    def __init__(self, parent):
-        super().__init__(parent)
-        
-        self.InitUI()
-        
-    def InitUI(self):
-        self.SetBackgroundColour('#f36926')
         
 
 class MainApp(wx.Frame):
@@ -255,7 +247,7 @@ def main():
     ma.Show()
     app.MainLoop()
     control.Destory()
-    print('End App')
+    # print('End App')
 
 if __name__ == '__main__':
     main()
