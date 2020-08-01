@@ -4,104 +4,220 @@ import urllib.request
 from pubsub import pub
 import time
 from threading import Thread
+import cv2
+import numpy as np
 from . import events
 from . control import Control
 
 WIDTH = 800
 HEIGHT = 600
 
-class ImageDownloadThread(Thread):
-    def __init__(self):
-        super().__init__()
-        self.stop = False
-        self.download = False
-        self.url = None
-        self.img = None
-        self.start()
+# class webcamPanel(wx.Panel):
+    
+#     def __init__(self, parent, camera, fps=10):
+#         self.mirror = False
         
-    def get_img(self):
-        img = self.img
-        self.img = None
-        return img
+#         wx.Panel.__init__(self, parent)
+#         self.SetBackgroundColour('ff0000')
         
-    def run(self):
-        while not self.stop:
-            time.sleep(0.1)
-            if not self.download or wx.GetApp() is None:
-                continue
-            if self.url.startswith('http'):
-                with urllib.request.urlopen(self.url) as f:
-                    data = f.read()
-            else:
-                with open(self.url, "rb") as d:
-                    data = d.read()
-            stream = BytesIO(data)
-            self.img = wx.Image(stream)
-            self.download = False
-            self.url = None
-            wx.CallAfter(pub.sendMessage, "img_get")
+#         self.frame = None
+#         self.bmp = None
+#         self.disp_width = -1
+#         self.disp_height = -1
+        
+#         self.camera = camera
+#         # _, frame = self.camera.read()
+        
+#         self.timer = wx.Timer(self)
+#         self.timer.Start(1000./fps)
+        
+#         self.Bind(wx.EVT_PAINT, self.OnPaint)
+#         self.Bind(wx.EVT_TIMER, self.NextFrame)
+#         self.Bind(wx.EVT_SIZE, self.OnSize)
+        
+#     def OnSize(self, event):
+#         fw, fh = self.GetSize()
+#         if self.frame:
+#             h, w = self.frame.shape[:2]
+#             ar = w/h
+#             far = fw/fh
+#             if far >= ar: # frame wider than image
+#                 nh = fh
+#                 nw = w/(h/nh)
+#             else: # frame taller than image
+#                 nw = fw
+#                 nh = h/(w/nw)
+                
+#             self.disp_width = nw
+#             self.disp_height = nh
+#             print(self.disp_width, self.disp_height)
+        
+#     def get_frame(self):
+#         result, frame = self.camera.read()
+#         if result:
+#             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+#             if self.disp_width > 0 and self.disp_height > 0:
+#                 frame = cv2.resize(frame, (self.disp_width, self.disp_height))
+            
+#             if self.mirror:
+#                 frame = cv2.flip(frame, 1)
+                
+#             h, w = frame.shape[:2]
+#             self.bmp = wx.Bitmap.FromBuffer(w, h, frame)
+            
+#             # self.SetSize((width,height))
+#         return result
+        
+#     def start(self):
+#         self.timer.Start()
+    
+#     def pause(self):
+#         self.timer.Stop()
+        
+#     def OnPaint(self, e):
+#         if self.bmp:
+#             dc = wx.BufferedPaintDC(self)
+#             dc.DrawBitmap(self.bmp, 0, 0)
+        
+#     def NextFrame(self, e):
+#         if self.get_frame():
+#             self.Refresh()
             
 class CameraControl(wx.Panel):
     def __init__(self, parent):
         super().__init__(parent)
+        print('Init Camera')
+        self.camera = cv2.VideoCapture(2, cv2.CAP_DSHOW)
+        self.SetCameraRes(10000, 10000)
+        self.max_width = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.max_height = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        self.img = None
-        self.download_thread = ImageDownloadThread()
+        self.mirror = False
+        self.frame = None
+        self.bmp = None
+        self.disp_width = -1
+        self.disp_height = -1
+
+        print(self.max_width, self.max_height)
         
         self.InitUI()
         
         self.Bind(wx.EVT_SIZE, self.OnSize)
-        # self.load('C:/Users/admin/Pictures/IMG_20200613_170435.jpg')
+        self.Bind(wx.EVT_TIMER, self.NextFrame)
         
-        pub.subscribe(self.ImageGet, "img_get")
+        self.timer = wx.Timer(self)
+        self.timer.Start(1000.0/5)
+        
+    def __del__(self):
+        pass
+        
+    def SetCameraRes(self, x, y):
+        self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, x)
+        self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, y)
+        
+    def NextFrame(self, event):
+        self.get_frame()
+        
+    def get_frame(self):
+        result, frame = self.camera.read()
+        if result:
+            self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            if self.disp_width > 0 and self.disp_height > 0:
+                self.frame = cv2.resize(self.frame, (self.disp_width, self.disp_height))
+            else:
+                self.OnSize(None)
+            
+            if self.mirror:
+                self.frame = cv2.flip(self.frame, 1)
+                
+            h, w = self.frame.shape[:2]
+            self.bmp = wx.Bitmap.FromBuffer(w, h, self.frame)
+            self.media.SetBitmap(self.bmp)
+            self.Layout()
+            
+        return result
         
     def OnSize(self,event):
         #prob better way to do this but wxPython is dumb
         #and media size will not change until Layout() called
         self.Layout()
-        self.resize_image()
-        
-    def ImageGet(self):
-        self.img = self.download_thread.get_img()
-        self.resize_image()
-        
-    def load(self, filename):
-        self.download_thread.url = filename
-        self.download_thread.download = True
-
-    def resize_image(self):
-        if self.img is None: return
-        imgcpy = self.img.Copy()
-        w, h = imgcpy.GetSize()
         fw, fh = self.media.GetSize()
-        if(fw == 0 or fh == 0): return
-        print((w,h), (fw, fh))
-        ar = w/h
-        far = fw/fh
-        if far >= ar: # frame wider than image
-            nh = fh
-            nw = w/(h/nh)
-        else: # frame taller than image
-            nw = fw
-            nh = h/(w/nw)
+        print(f'Media: {fw}x{fh}')
+        if self.frame is not None:
+            h, w = self.frame.shape[:2]
+            ar = w/h
+            far = fw/fh
+            if far >= ar: # frame wider than image
+                nh = fh
+                nw = int(w/(h/nh))
+            else: # frame taller than image
+                nw = fw
+                nh = int(h/(w/nw))
+                
+            self.disp_width = nw
+            self.disp_height = nh
+            print(f'Resize: {nw}x{nh}')
+            self.Layout()
         
-        imgcpy.Rescale(nw, nh)
+    # def resize_image(self):
+    #     if self.img is None: return
+    #     imgcpy = self.img.Copy()
+    #     w, h = imgcpy.GetSize()
+    #     fw, fh = self.media.GetSize()
+    #     if(fw == 0 or fh == 0): return
+    #     print((w,h), (fw, fh))
+    #     ar = w/h
+    #     far = fw/fh
+    #     if far >= ar: # frame wider than image
+    #         nh = fh
+    #         nw = w/(h/nh)
+    #     else: # frame taller than image
+    #         nw = fw
+    #         nh = h/(w/nw)
         
-        bmp = wx.Bitmap(imgcpy)
-        self.media.SetBitmap(bmp)
-        self.Layout()
+    #     imgcpy.Rescale(nw, nh)
+        
+    #     bmp = wx.Bitmap(imgcpy)
+    #     self.media.SetBitmap(bmp)
+    #     self.Layout()
         
     def GetImage(self):
-        wx.CallAfter(self.load, 'http://plottercam:8080/thumb')
+        wx.CallAfter(self.load, 'http://plottercam:8080/img')
         
     def OnGetImage(self, event):
-        self.GetImage()
+        # self.GetImage()
+        self.take_picture(None)
+        
+    def take_picture(self, e):
+        current_directory = 'G:/'
+        mirror = False
+        
+        #get current frame from camera
+        self.webcampanel.pause()
+        self.SetCameraRes(self.max_width, self.max_height)
+        
+        _, image = self.camera.read()
+        #check to see if you should mirror image
+        if mirror:
+            image = cv2.flip(image, 1)
+        #get the directory to save it in.
+        filename = current_directory + "/test.jpeg"
+        #save the image
+        cv2.imwrite(filename,image)
+        #read the image (this is backwards isn't it?!
+        # saved_image = cv2.imread(filename)
+
+        self.SetCameraRes(self.cam_view_width, self.cam_view_height)
+        self.webcampanel.start()
         
     def InitUI(self):
         vbox = wx.BoxSizer(wx.VERTICAL)
         
-        self.media = wx.StaticBitmap(self, size=(WIDTH,HEIGHT))
+        self.media = wx.StaticBitmap(self)#, size=(WIDTH,HEIGHT))
         vbox.Add(self.media, proportion=1, flag=wx.EXPAND)
+        
+        # self.webcampanel = webcamPanel(self, self.camera)
+        # vbox.Add(self.webcampanel, proportion=1, flag=wx.EXPAND)
         
         gs = wx.GridBagSizer(2,3)
         
