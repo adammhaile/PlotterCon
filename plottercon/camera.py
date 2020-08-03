@@ -113,12 +113,13 @@ class CameraControl(wx.Panel):
     def __init__(self, parent):
         super().__init__(parent)
         print('Init Camera')
-        self.camera = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+        self.camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)
         self.SetCameraRes(10000, 10000)
         self.max_width = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.max_height = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
         self.mirror = False
+        self.raw_frame = None
         self.frame = None
         self.bmp = None
         self.disp_width = -1
@@ -148,12 +149,9 @@ class CameraControl(wx.Panel):
         self.get_frame()
         
     def get_frame(self):
-        # start = time.time()
-        result, frame = self.camera.read()
-        # diff = time.time() - start
-        # print(f'get_frame: {diff}')
+        result, self.raw_frame = self.camera.read()
         if result:
-            self.frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            self.frame = cv2.cvtColor(self.raw_frame, cv2.COLOR_BGR2RGB)
             if self.disp_width > 0 and self.disp_height > 0:
                 self.frame = cv2.resize(self.frame, (self.disp_width, self.disp_height))
             if self.recalc:
@@ -173,7 +171,7 @@ class CameraControl(wx.Panel):
         fw, fh = self.video.GetSize()
         print(f'Media: {fw}x{fh}')
         if self.frame is not None:
-            h, w = self.frame.shape[:2]
+            h, w = self.raw_frame.shape[:2]
             print(f'frame: {w}x{h}')
             ar = w/h
             far = fw/fh
@@ -182,11 +180,11 @@ class CameraControl(wx.Panel):
             if far >= ar: # frame wider than image
                 nh = fh
                 nw = int(w/(h/nh))
-                self.off_x = int((fw - w) / 2)
+                self.off_x = int((fw - nw) / 2)
             else: # frame taller than image
                 nw = fw
                 nh = int(h/(w/nw))
-                self.off_y = int((fh - h) / 2)
+                self.off_y = int((fh - nh) / 2)
                 
             self.video.SetOffset(self.off_x, self.off_y)
             self.disp_width = nw
