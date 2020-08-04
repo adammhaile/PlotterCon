@@ -19,9 +19,11 @@ class CamUpdateThread(Thread):
         self.bmp = None
         self.stop = False
         self.lock = Lock()
-        self.start()
         
     def capture(self):
+        if self.panel.camera is None:
+            return False
+
         with self.lock:
             result, self.raw_frame = self.panel.camera.read()
             
@@ -48,12 +50,14 @@ class CamUpdateThread(Thread):
             return self.bmp
         
     def run(self):
+        print('Start cam thread')
         while not self.stop:
-            if wx.GetApp() is None:
-                break # app is closing, just quit
             if self.capture():
+                if wx.GetApp() is None:
+                    break # app is closing, just quit
                 wx.CallAfter(self.panel.update)
             time.sleep(1.0/15)
+        print('End cam thread')
 
 class videoPanel(wx.Panel):
     def __init__(self, parent):
@@ -64,13 +68,13 @@ class videoPanel(wx.Panel):
         self.Bind(wx.EVT_PAINT, self.OnPaint)
         
     def OnPaint(self, e):
+        dc = wx.BufferedPaintDC(self)
+        dc.SetBrush(wx.Brush(wx.BLACK))
+        w, h = self.GetClientSize()
+        dc.DrawRectangle(0, 0, w, h)
         if self.bmp:
-            dc = wx.BufferedPaintDC(self)
-            dc.SetBrush(wx.Brush(wx.BLACK))
-            w, h = self.GetClientSize()
-            dc.DrawRectangle(0, 0, w, h)
             dc.DrawBitmap(self.bmp, self.x, self.y)
-            del dc
+        del dc
             
     def SetBitmap(self, bmp):
         self.bmp = bmp
@@ -83,18 +87,14 @@ class videoPanel(wx.Panel):
 class CameraControl(wx.Panel):
     def __init__(self, parent):
         super().__init__(parent)
-        print('Init Camera')
-        self.camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-        self.SetCameraRes(10000, 10000)
-        self.max_width = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.max_height = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.camera = None
+        self.max_width = 0
+        self.max_height = 0
 
         self.disp_width = -1
         self.disp_height = -1
         self.off_x = 0
         self.off_y = 0
-
-        print(self.max_width, self.max_height)
         
         self.InitUI()
         
@@ -103,8 +103,10 @@ class CameraControl(wx.Panel):
         self.cam_thread = CamUpdateThread(self)
         
     def __del__(self):
-        self.cam_thread.stop = True
-        self.cam_thread.join()
+        print('kill thread')
+        if self.cam_thread.is_alive():
+            self.cam_thread.stop = True
+            self.cam_thread.join()
         
     def SetCameraRes(self, x, y):
         self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, x)
@@ -120,6 +122,7 @@ class CameraControl(wx.Panel):
     def CalcFrameData(self):
         fw, fh = self.video.GetSize()
         if fw==0 or fh == 0: return
+        if self.max_height == 0 or self.max_width == 0: return
         h, w = self.max_height, self.max_width
         ar = w/h
         far = fw/fh
@@ -143,9 +146,6 @@ class CameraControl(wx.Panel):
         self.Layout()
         self.CalcFrameData()
         
-    def GetImage(self):
-        wx.CallAfter(self.load, 'http://plottercam:8080/img')
-        
     def OnGetImage(self, event):
         self.take_picture()
         
@@ -160,30 +160,66 @@ class CameraControl(wx.Panel):
         #save the image
         cv2.imwrite(filename,frame)
         
+    def OnInitCamera(self, event):
+        print('Init Camera')
+        if self.cam_thread.is_alive():
+            self.cam_thread.stop = True
+            self.cam_thread.join()
+        
+        if self.camera and self.camera.isOpened():
+            self.camera.release()
+            
+        cam_id = self.sbCamera.GetValue()
+        self.camera = cv2.VideoCapture(cam_id, cv2.CAP_DSHOW)
+        if not self.camera.isOpened():
+            self.camera.release()
+            self.camera = None
+            self.video.SetBitmap(None)
+            wx.MessageBox(f'Unable to open camera {cam_id}', 'Camera Init Failure', wx.OK | wx.ICON_WARNING)
+            self.cam_thread.pause = False
+            return
+            
+        self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 10000)
+        self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 1000)
+        self.max_width = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.max_height = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.CalcFrameData()
+        print(self.max_width, self.max_height)
+        self.cam_thread.stop = False
+        self.cam_thread.start()
+        
     def InitUI(self):
         vbox = wx.BoxSizer(wx.VERTICAL)
         
         self.video = videoPanel(self)
         vbox.Add(self.video, proportion=1, flag=wx.EXPAND)
         
-        gs = wx.GridBagSizer(2,3)
+        gs = wx.GridBagSizer(2,5)
         
-        self.btnGetImage = wx.Button(self, label='Get Image')
-        self.btnGetImage.Bind(wx.EVT_BUTTON, self.OnGetImage)
-        gs.Add(self.btnGetImage, (0,0), flag=wx.EXPAND)
+        self.btnInitCamera = wx.Button(self, label='Init Camera')
+        self.btnInitCamera.Bind(wx.EVT_BUTTON, self.OnInitCamera)
+        gs.Add(self.btnInitCamera, (0,0), span=(0,2), flag=wx.EXPAND)
         
-        self.btnStartFocus = wx.Button(self, label='Start Focus')
-        gs.Add(self.btnStartFocus, (1,0), flag=wx.EXPAND)
+        # self.btnGetImage = wx.Button(self, label='GetImage')
+        # self.btnGetImage.Bind(wx.EVT_BUTTON, self.OnGetImage)
+        # gs.Add(self.btnGetImage, (0,0), flag=wx.EXPAND)
         
-        self.sbWidth = wx.SpinCtrlDouble(self, min=1, initial=50.0, inc=5)
-        self.sbWidth.SetDigits(2)
-        gs.Add(wx.StaticText(self, label='Width (mm)'), (0, 1), flag=wx.ALIGN_CENTER_VERTICAL)
-        gs.Add(self.sbWidth, (0, 2))
+        self.sbCamera = wx.SpinCtrl(self, min=0, max=99, initial=0)
+        gs.Add(wx.StaticText(self, label='Camera ID'), (1, 0), flag=wx.ALIGN_CENTER_VERTICAL)
+        gs.Add(self.sbCamera, (1, 1))
         
-        self.sbHeight = wx.SpinCtrlDouble(self, min=1, initial=50.0, inc=5)
-        self.sbHeight.SetDigits(2)
-        gs.Add(wx.StaticText(self, label='Height (mm)'), (1, 1), flag=wx.ALIGN_CENTER_VERTICAL)
-        gs.Add(self.sbHeight, (1, 2))
+        # self.btnStartFocus = wx.Button(self, label='Start Focus')
+        # gs.Add(self.btnStartFocus, (1,0), flag=wx.EXPAND)
+        
+        # self.sbWidth = wx.SpinCtrlDouble(self, min=1, initial=50.0, inc=5)
+        # self.sbWidth.SetDigits(2)
+        # gs.Add(wx.StaticText(self, label='Width (mm)'), (0, 1), flag=wx.ALIGN_CENTER_VERTICAL)
+        # gs.Add(self.sbWidth, (0, 2))
+        
+        # self.sbHeight = wx.SpinCtrlDouble(self, min=1, initial=50.0, inc=5)
+        # self.sbHeight.SetDigits(2)
+        # gs.Add(wx.StaticText(self, label='Height (mm)'), (1, 1), flag=wx.ALIGN_CENTER_VERTICAL)
+        # gs.Add(self.sbHeight, (1, 2))
         
         vbox.Add(gs, proportion=0, flag=wx.ALL, border=5)
         self.SetSizer(vbox)
