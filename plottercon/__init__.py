@@ -224,7 +224,7 @@ class MainApp(wx.Frame):
         self.InitUI()
 
     def InitUI(self):
-        self.SetSizeHints(800, 600)
+        self.SetSizeHints(1280, 720)
         self.SetTitle('PlotterCon')
         # self.Centre()
         

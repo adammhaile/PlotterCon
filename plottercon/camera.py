@@ -19,6 +19,7 @@ class CamUpdateThread(Thread):
         self.bmp = None
         self.stop = False
         self.lock = Lock()
+        self.start()
         
     def capture(self):
         if self.panel.camera is None:
@@ -100,11 +101,10 @@ class CameraControl(wx.Panel):
         
         self.Bind(wx.EVT_SIZE, self.OnSize)
         
-        self.cam_thread = CamUpdateThread(self)
+        self.cam_thread = None
         
     def __del__(self):
-        print('kill thread')
-        if self.cam_thread.is_alive():
+        if self.cam_thread and self.cam_thread.is_alive():
             self.cam_thread.stop = True
             self.cam_thread.join()
         
@@ -162,9 +162,11 @@ class CameraControl(wx.Panel):
         
     def OnInitCamera(self, event):
         print('Init Camera')
-        if self.cam_thread.is_alive():
+        if self.cam_thread is not None:
             self.cam_thread.stop = True
             self.cam_thread.join()
+            del self.cam_thread
+            self.cam_thread = None
         
         if self.camera and self.camera.isOpened():
             self.camera.release()
@@ -176,7 +178,6 @@ class CameraControl(wx.Panel):
             self.camera = None
             self.video.SetBitmap(None)
             wx.MessageBox(f'Unable to open camera {cam_id}', 'Camera Init Failure', wx.OK | wx.ICON_WARNING)
-            self.cam_thread.pause = False
             return
             
         self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 10000)
@@ -185,8 +186,8 @@ class CameraControl(wx.Panel):
         self.max_height = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.CalcFrameData()
         print(self.max_width, self.max_height)
-        self.cam_thread.stop = False
-        self.cam_thread.start()
+        if not self.cam_thread:
+            self.cam_thread = CamUpdateThread(self)
         
     def InitUI(self):
         vbox = wx.BoxSizer(wx.VERTICAL)
@@ -194,7 +195,7 @@ class CameraControl(wx.Panel):
         self.video = videoPanel(self)
         vbox.Add(self.video, proportion=1, flag=wx.EXPAND)
         
-        gs = wx.GridBagSizer(2,5)
+        gs = wx.GridBagSizer(3,9)
         
         self.btnInitCamera = wx.Button(self, label='Init Camera')
         self.btnInitCamera.Bind(wx.EVT_BUTTON, self.OnInitCamera)
@@ -208,19 +209,66 @@ class CameraControl(wx.Panel):
         gs.Add(wx.StaticText(self, label='Camera ID'), (1, 0), flag=wx.ALIGN_CENTER_VERTICAL)
         gs.Add(self.sbCamera, (1, 1))
         
-        # self.btnStartFocus = wx.Button(self, label='Start Focus')
-        # gs.Add(self.btnStartFocus, (1,0), flag=wx.EXPAND)
+        self.sbWidth = wx.SpinCtrlDouble(self, min=1, max=1000, initial=50.0, inc=5)
+        self.sbWidth.SetDigits(2)
+        self.sbWidth.SetSizeHints((75, -1))
+        gs.Add(wx.StaticText(self, label='Width (mm)'), (0, 3), flag=wx.ALIGN_CENTER_VERTICAL)
+        gs.Add(self.sbWidth, (0, 4))
         
-        # self.sbWidth = wx.SpinCtrlDouble(self, min=1, initial=50.0, inc=5)
-        # self.sbWidth.SetDigits(2)
-        # gs.Add(wx.StaticText(self, label='Width (mm)'), (0, 1), flag=wx.ALIGN_CENTER_VERTICAL)
-        # gs.Add(self.sbWidth, (0, 2))
+        self.sbHeight = wx.SpinCtrlDouble(self, min=1, max=1000, initial=50.0, inc=5)
+        self.sbHeight.SetDigits(2)
+        self.sbHeight.SetSizeHints((75, -1))
+        gs.Add(wx.StaticText(self, label='Height (mm)'), (1, 3), flag=wx.ALIGN_CENTER_VERTICAL)
+        gs.Add(self.sbHeight, (1, 4))
         
-        # self.sbHeight = wx.SpinCtrlDouble(self, min=1, initial=50.0, inc=5)
-        # self.sbHeight.SetDigits(2)
-        # gs.Add(wx.StaticText(self, label='Height (mm)'), (1, 1), flag=wx.ALIGN_CENTER_VERTICAL)
-        # gs.Add(self.sbHeight, (1, 2))
+        self.sbInc = wx.SpinCtrlDouble(self, min=1, max=50, initial=1, inc=0.1)
+        self.sbInc.SetDigits(2)
+        self.sbInc.SetSizeHints((75, -1))
+        gs.Add(wx.StaticText(self, label='Inc (mm)'), (2, 3), flag=wx.ALIGN_CENTER_VERTICAL)
+        gs.Add(self.sbInc, (2, 4))
+        
+        self.sbZLevels = wx.SpinCtrl(self, min=1, max=100, initial=1)
+        self.sbZLevels.SetSizeHints((55, -1))
+        gs.Add(wx.StaticText(self, label='Z Levels'), (0, 5), flag=wx.ALIGN_CENTER_VERTICAL)
+        gs.Add(self.sbZLevels, (0, 6))
+        
+        self.sbZStep = wx.SpinCtrlDouble(self, min=-10, max=10, initial=0, inc=0.1)
+        self.sbZStep.SetDigits(1)
+        self.sbZStep.SetSizeHints((55, -1))
+        gs.Add(wx.StaticText(self, label='Z Step (mm)'), (1, 5), flag=wx.ALIGN_CENTER_VERTICAL)
+        gs.Add(self.sbZStep, (1, 6))
+        
+        self.btnStart = wx.Button(self, label='Start')
+        # self.btnStart.Bind(wx.EVT_BUTTON, self.OnInitCamera)
+        gs.Add(self.btnStart, (0,7), flag=wx.EXPAND)
+        
+        self.btnStop = wx.Button(self, label='Stop')
+        # self.btnStop.Bind(wx.EVT_BUTTON, self.OnInitCamera)
+        gs.Add(self.btnStop, (0,8), flag=wx.EXPAND)
+        
+        self.btnFrame = wx.Button(self, label='Frame')
+        # self.btnFrame.Bind(wx.EVT_BUTTON, self.OnInitCamera)
+        gs.Add(self.btnFrame, (1,7), flag=wx.EXPAND)
+        
+        self.btnOut = wx.Button(self, label='Out Dir')
+        self.btnOut.Bind(wx.EVT_BUTTON, self.OnChooseDir)
+        gs.Add(self.btnOut, (2,5), flag=wx.EXPAND)
+        self.txtOutDir = wx.TextCtrl(self, style=wx.TE_READONLY)
+        gs.Add(self.txtOutDir, (2,6), span=(0,3), flag=wx.EXPAND)
         
         vbox.Add(gs, proportion=0, flag=wx.ALL, border=5)
         self.SetSizer(vbox)
         
+    def OnChooseDir(self, e):
+        print('Out Dir')
+        dlg = wx.DirDialog(self, "Choose output directory", "",
+                    wx.DD_DEFAULT_STYLE | wx.DD_DIR_MUST_EXIST)
+        if dlg.ShowModal() == wx.ID_OK:
+            print(dlg.GetPath())
+        
+# z-levels
+# z-step
+# frame - pause at each corner
+# Start/Pause
+# Stop
+# set directory
