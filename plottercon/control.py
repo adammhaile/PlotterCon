@@ -62,10 +62,13 @@ class Control():
         self.cmd_map = SMOO
         self.pos = [0,0,0]
         
+        self.jog_speed = 100
+        self.jog_z_speed = 10
+        
         self.pollThread = StatusPollThread()
         pub.subscribe(self.GetStatus, "get_status")
         
-    def Destory(self):
+    def Destroy(self):
         self.console_callbacks.clear()
         self.Disconnect()
         if self.pollThread is not None:
@@ -202,11 +205,37 @@ class Control():
     def PublishToConsole(self, data):
         for cb in self.console_callbacks:
             cb(data)
+            
+    def gcode_rel_header(self):
+        return 'G21 G52 G91' # metric, coord space, relative
+        
+    def gcode_abs_header(self):
+        return 'G21 G52 G91' # metric, coord space, relative
+        
+    def move_cmd(self, x=0, y=0, z=0, speed=-1, rapid=True):
+        res = 'G0 ' if rapid else 'G1 '
+        if speed == -1:
+            if x==0 and y==0 and z>0:
+                speed = self.jog_z_speed
+            else:
+                speed = self.jog_speed
+                
+        speed = speed * 60
+        if x: res += f'X{x:.2F} '
+        if y: res += f'Y{y:.2F} '
+        if z: res += f'Z{z:.2F} '
+        res += f'F{speed:.2f} S0'
+        return res
 
-    def Jog(self, axis, dist, speed):
+    def Jog(self, axis, dist, speed=-1):
         if not self.Connected(): return
+        if speed==-1:
+            if axis=='Z': speed = self.jog_z_speed
+            else: speed = self.jog_speed
+            
+        speed = speed * 60
         cmds = [
-            'G21 G52 G91', # metric, coord space, relative
+            self.gcode_rel_header(), # metric, coord space, relative
             f'G0 {axis}{dist:.2f} F{speed:.2f} S0',
             'G90', # absolute
         ]

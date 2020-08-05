@@ -3,6 +3,7 @@ from threading import Thread
 from pubsub import pub
 from . control import Control
 from . camera import CameraControl
+from . dotconfig import Config
 import time
 
 AXIS = ['X', 'Y', 'Z']
@@ -28,9 +29,9 @@ class ControlPollThread(Thread):
             time.sleep(1.0)
 
 class MachineControl(wx.Panel):
-    def __init__(self, parent, control):
+    def __init__(self, parent, control, cfg):
         super().__init__(parent)
-        
+        self.cfg = cfg
         self.control = control
         self.control.RegisterCallbackObject(self)
         self.moveBtns = {}
@@ -41,6 +42,9 @@ class MachineControl(wx.Panel):
         self.RefreshPorts(None)
         
         pub.subscribe(self.OnPoll, "poll")
+        
+    def Close(self):
+        pass
         
     def on_control_status(self, pos):            
         spos = ''
@@ -71,7 +75,7 @@ class MachineControl(wx.Panel):
         else:
             dist = self.sbDist.GetValue()
             speed = self.sbSpeed.GetValue()
-        self.control.Jog(axis, dist*d, speed*60)
+        self.control.Jog(axis, dist*d, speed)
     
     def HomeAllClicked(self, event):
         self.control.HomeAll()
@@ -108,6 +112,12 @@ class MachineControl(wx.Panel):
         
     def OnPoll(self):
         self.OnGetPosition(None)
+        
+    def OnSpeedChange(self, e):
+        self.control.jog_speed = e.GetValue()
+        
+    def OnZSpeedChange(self, e):
+        self.control.jog_z_speed = e.GetValue()
 
     def InitUI(self):
         self.SetSizeHints(390, 480)
@@ -161,8 +171,10 @@ class MachineControl(wx.Panel):
         gs.Add(wx.StaticText(self, label='Distance (mm)'), (0, 4), flag=wx.ALIGN_CENTER_VERTICAL)
         gs.Add(self.sbDist, (0, 5))
         
-        self.sbSpeed = wx.SpinCtrlDouble(self, min=0.1, max=500, initial=100.0, inc=10)
+        self.control.jog_speed = 100
+        self.sbSpeed = wx.SpinCtrlDouble(self, min=0.1, max=500, initial=self.control.jog_speed, inc=10)
         self.sbSpeed.SetDigits(2)
+        self.sbSpeed.Bind(wx.EVT_SPINCTRLDOUBLE, self.OnSpeedChange)
         gs.Add(wx.StaticText(self, label='Speed (mm/s)'), (1, 4), flag=wx.ALIGN_CENTER_VERTICAL)
         gs.Add(self.sbSpeed, (1, 5))
         
@@ -171,8 +183,10 @@ class MachineControl(wx.Panel):
         gs.Add(wx.StaticText(self, label='Z Distance (mm)'), (2, 4), flag=wx.ALIGN_CENTER_VERTICAL)
         gs.Add(self.sbZDist, (2, 5))
         
-        self.sbZSpeed = wx.SpinCtrlDouble(self, min=0.1, max=100, initial=10.0, inc=10)
+        self.control.jog_z_speed = 10
+        self.sbZSpeed = wx.SpinCtrlDouble(self, min=0.1, max=100, initial=self.control.jog_speed, inc=10)
         self.sbZSpeed.SetDigits(2)
+        self.sbZSpeed.Bind(wx.EVT_SPINCTRLDOUBLE, self.OnZSpeedChange)
         gs.Add(wx.StaticText(self, label='Z Speed (mm/s)'), (3, 4), flag=wx.ALIGN_CENTER_VERTICAL)
         gs.Add(self.sbZSpeed, (3, 5))
         
@@ -217,11 +231,19 @@ class MachineControl(wx.Panel):
         
 
 class MainApp(wx.Frame):
-    def __init__(self, parent, control):
+    def __init__(self, parent, control, cfg):
         super().__init__(parent)
 
         self.control = control
+        self.cfg = cfg
         self.InitUI()
+        
+        self.Bind(wx.EVT_CLOSE, self.Close)
+        
+    def Close(self, e):
+        self.camControl.Close()
+        self.mc.Close()
+        self.Destroy()
 
     def InitUI(self):
         self.SetSizeHints(1280, 720)
@@ -229,25 +251,26 @@ class MainApp(wx.Frame):
         # self.Centre()
         
         hbox = wx.BoxSizer(wx.HORIZONTAL)
-        self.mc = MachineControl(self, self.control)
+        self.mc = MachineControl(self, self.control, self.cfg)
         hbox.Add(self.mc, proportion=0, flag=wx.EXPAND)
         self.notebook = wx.Notebook(self)
         self.notebook.SetSizeHints(640, 480)
-        self.camControl = CameraControl(self.notebook)
+        self.camControl = CameraControl(self.notebook, self.cfg, self.control)
         self.notebook.AddPage(self.camControl, 'Camera')
         hbox.Add(self.notebook, proportion=1, flag=wx.EXPAND)
         self.SetSizer(hbox)
 
 
 def main():
-
+    cfg = Config('PlotterCon', 'settings')
     app = wx.App()
     control = Control()
-    ma = MainApp(None, control)
+    ma = MainApp(None, control, cfg)
     ma.Show()
     app.MainLoop()
-    control.Destory()
-    # print('End App')
+    # ma.Close()
+    control.Destroy()
+    cfg.write()
 
 if __name__ == '__main__':
     main()
