@@ -3,6 +3,7 @@ from io import BytesIO
 import urllib.request
 from pubsub import pub
 import time
+import errno
 from threading import Thread, Lock
 import cv2
 import os
@@ -115,13 +116,19 @@ class CamRunThread(Thread):
         speed = self.control.jog_speed
         
         self.control.Send(self.control.gcode_abs_header())
-        for z in range(_z, _z + (self.z_step * self.z_levels) + self.z_step, self.z_step):
+        z_stop = _z + (self.z_step * self.z_levels) + self.z_step
+        if self.z_levels == 1 or z_stop == 0:
+            z_range = [_z]
+        else:
+            z_range = np.arange(_z, z_stop, self.z_step)
+            
+        for z in z_range:
             subdir = f'Z{z}'
             out_dir = os.path.join(self.out_dir, subdir)
             try:
                 os.makedirs(out_dir)
             except OSError as ex:
-                if exc.errno == errno.EEXIST and os.path.isdir(out_dir):
+                if ex.errno == errno.EEXIST and os.path.isdir(out_dir):
                     pass
                 
             move = self.control.move_cmd(z=z, speed=self.control.jog_z_speed)
@@ -133,22 +140,26 @@ class CamRunThread(Thread):
             step_dir = 1 if self.inc > 0 else -1
             x_stop = (_x + ((self.frame_width + abs(self.inc)) * step_dir))
             y_stop = (_y + ((self.frame_width + abs(self.inc)) * step_dir))
-            
-            for x in range(_x, x_stop, self.inc):
-                for y in range(_y, y_stop, self.inc):
+            row = 0
+            for x in np.arange(_x, x_stop, self.inc):
+                for y in np.arange(_y, y_stop, self.inc):
                     if self.stop or self.stop_cap: return
                     elif self.pause:
                         while self.pause:
                             time.sleep(0.1)
                     move = self.control.move_cmd(x=x, y=y, speed=speed)
                     self.control.Send(move)
-                    while True:
+                    while True and not self.stop_cap:
                         if self.control.pos[0] == x and self.control.pos[1] == y: break
                         time.sleep(0.5)
                     name = f'Z{z}X{x}Y{y}'
                     self.cam_ui.take_picture(out_dir, name)
+                row += 1
                     
+        self.control.Send(self.control.move_cmd(x=_x, y=_y, speed=speed))
+        self.control.Send(self.control.move_cmd(z=_z, speed=self.control.jog_z_speed))
         self.running_cap = False
+        wx.CallAfter(self.cam_ui.CaptureComplete)
             
         
     def do_run_capture(self, width, height, inc, z_levels, z_step, out_dir):
@@ -390,9 +401,13 @@ class CameraControl(wx.Panel):
         vbox.Add(gs, proportion=0, flag=wx.ALL, border=5)
         self.SetSizer(vbox)
         
+    def CaptureComplete(self):
+        self.btnStart.SetLabel('Start')
+        
     def OnStop(self, e):
         if self.control.Connected() and self.run_thread:
             self.run_thread.stop_cap = True
+            self.btnStart.SetLabel('Start')
 
     def OnStartPause(self, e):
         if self.control.Connected() and self.run_thread:

@@ -210,20 +210,20 @@ class Control():
         return 'G21 G52 G91' # metric, coord space, relative
         
     def gcode_abs_header(self):
-        return 'G21 G52 G91' # metric, coord space, relative
+        return 'G21 G52 G90' # metric, coord space, relative
         
-    def move_cmd(self, x=0, y=0, z=0, speed=-1, rapid=True):
+    def move_cmd(self, x=None, y=None, z=None, speed=-1, rapid=True):
         res = 'G0 ' if rapid else 'G1 '
         if speed == -1:
-            if x==0 and y==0 and z>0:
+            if x is None and y is None and z>0:
                 speed = self.jog_z_speed
             else:
                 speed = self.jog_speed
                 
         speed = speed * 60
-        if x: res += f'X{x:.2F} '
-        if y: res += f'Y{y:.2F} '
-        if z: res += f'Z{z:.2F} '
+        if x is not None: res += f'X{x:.2F} '
+        if y is not None: res += f'Y{y:.2F} '
+        if z is not None: res += f'Z{z:.2F} '
         res += f'F{speed:.2f} S0'
         return res
 
