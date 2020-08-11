@@ -1,3 +1,4 @@
 wxPython
 pypubsub
 ruamel.yaml
+opencv-python
