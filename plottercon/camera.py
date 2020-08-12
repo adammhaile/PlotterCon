@@ -160,7 +160,7 @@ class CamRunThread(Thread):
                         print(pos)
                         if pos[0] == x and pos[1] == y: break
                         time.sleep(0.5)
-                    name = f'Z{z}X{x}Y{y}'
+                    name = f'Z{z}Y{y}X{x}'
                     time.sleep(1) # hold to settle motion
                     self.cam_ui.take_picture(out_dir, name)
                 row += 1
