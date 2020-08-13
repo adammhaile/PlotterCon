@@ -79,8 +79,8 @@ class CamRunThread(Thread):
         self.stop_cap = False
         self.stop_cmd = False
 
-        self.frame_width = 0
-        self.frame_height = 0
+        self.xsteps = 0
+        self.ysteps = 0
         self.inc = 0
         self.z_levels = 0
         self.z_step = 0
@@ -97,20 +97,21 @@ class CamRunThread(Thread):
         dwell = f'G4 S{dwell_time}'
         cmds = [
             self.control.gcode_rel_header(),
-            self.control.move_cmd(x=self.frame_width, speed=speed),
+            self.control.move_cmd(x=self.xsteps*self.inc, speed=speed),
             dwell,
-            self.control.move_cmd(y=self.frame_height, speed=speed),
+            self.control.move_cmd(y=self.ysteps*self.inc, speed=speed),
             dwell,
-            self.control.move_cmd(x=self.frame_width*-1, speed=speed),
+            self.control.move_cmd(x=self.xsteps*self.inc*-1, speed=speed),
             dwell,
-            self.control.move_cmd(y=self.frame_height*-1, speed=speed),
+            self.control.move_cmd(y=self.ysteps*self.inc*-1, speed=speed),
             'G90',
         ]
         self.control.Send(cmds)
 
-    def do_frame(self, width, height):
-        self.frame_width = width
-        self.frame_height = height
+    def do_frame(self, x, y, inc):
+        self.xsteps = x
+        self.ysteps = y
+        self.inc = inc
         self.cmd = self.cmd_frame
 
     def cmd_run_capture(self):
@@ -120,14 +121,11 @@ class CamRunThread(Thread):
         self.running_cap = True
         _x, _y, _z = self.control.Position()[:3]
         speed = self.control.jog_speed
+        count = 0
+        wx.CallAfter(self.cam_ui.UpdateProgress, count)
 
         self.control.Send(self.control.gcode_abs_header())
-        z_stop = _z + (self.z_step * self.z_levels) + self.z_step
-        if self.z_levels == 1 or z_stop == 0:
-            z_range = [_z]
-        else:
-            z_range = np.arange(_z, z_stop, self.z_step)
-
+        z_range = [_z + (i*self.z_step) for i in range(self.z_levels)]
         for z in z_range:
             subdir = f'Z{z}'
             out_dir = os.path.join(self.out_dir, subdir)
@@ -143,12 +141,14 @@ class CamRunThread(Thread):
                 if self.control.Position()[2] == z: break
                 time.sleep(0.5)
 
-            step_dir = 1 if self.inc > 0 else -1
-            x_stop = (_x + ((self.frame_width + abs(self.inc)) * step_dir))
-            y_stop = (_y + ((self.frame_width + abs(self.inc)) * step_dir))
-            row = 0
-            for y in np.arange(_y, y_stop, self.inc):
-                for x in np.arange(_x, x_stop, self.inc):
+            y_range = [_y + (i*self.inc) for i in range(self.ysteps + 1)]
+            x_range = [_x + (i*self.inc) for i in range(self.xsteps + 1)]
+            x_range.reverse() #reverse initially so we can just call rev every time
+            for y in y_range:
+                x_range.reverse()
+                for x in x_range:
+                    count += 1
+                    wx.CallAfter(self.cam_ui.UpdateProgress, count)
                     if self.stop or self.stop_cap: return
                     elif self.pause:
                         while self.pause:
@@ -157,23 +157,23 @@ class CamRunThread(Thread):
                     self.control.Send(move)
                     while True and not self.stop_cap:
                         pos = self.control.Position()
-                        print(pos)
                         if pos[0] == x and pos[1] == y: break
-                        time.sleep(0.5)
+                        time.sleep(0.25)
                     name = f'Z{z}Y{y}X{x}'
                     time.sleep(1) # hold to settle motion
                     self.cam_ui.take_picture(out_dir, name)
-                row += 1
+                
+            complete = (not self.stop)
 
         self.control.Send(self.control.move_cmd(x=_x, y=_y, speed=speed))
         self.control.Send(self.control.move_cmd(z=_z, speed=self.control.jog_z_speed))
         self.running_cap = False
-        wx.CallAfter(self.cam_ui.CaptureComplete)
+        wx.CallAfter(self.cam_ui.CaptureComplete, complete)
 
 
-    def do_run_capture(self, width, height, inc, z_levels, z_step, out_dir):
-        self.frame_width = width
-        self.frame_height = height
+    def do_run_capture(self, xsteps, ysteps, inc, z_levels, z_step, out_dir):
+        self.xsteps = xsteps
+        self.ysteps = ysteps
         self.inc = inc
         self.z_levels = z_levels
         self.z_step = z_step
@@ -202,6 +202,11 @@ class videoPanel(wx.Panel):
         dc.DrawRectangle(0, 0, w, h)
         if self.bmp:
             dc.DrawBitmap(self.bmp, self.x, self.y)
+            dc.SetPen(wx.Pen(wx.RED, 1))
+            dc.SetBrush(wx.TRANSPARENT_BRUSH)
+            dc.DrawLine(0, h/2, w, h/2)
+            dc.DrawLine(w/2, 0, w/2, h)
+            dc.DrawCircle(w/2, h/2, h*0.1)
         del dc
 
     def SetBitmap(self, bmp):
@@ -229,8 +234,11 @@ class CameraControl(wx.Panel):
         self.disp_height = -1
         self.off_x = 0
         self.off_y = 0
+        
+        self.image_count = 0
 
         self.InitUI()
+        self.OnConfigChanged(None)
 
         self.Bind(wx.EVT_SIZE, self.OnSize)
 
@@ -248,8 +256,8 @@ class CameraControl(wx.Panel):
             self.run_thread.join()
 
     def __savecfg(self):
-        self.cfg['cam_width'] = self.sbWidth.GetValue()
-        self.cfg['cam_height'] = self.sbHeight.GetValue()
+        self.cfg['cam_xstep'] = self.sbXSteps.GetValue()
+        self.cfg['cam_ystep'] = self.sbYSteps.GetValue()
         self.cfg['cam_inc'] = self.sbInc.GetValue()
         self.cfg['cam_zlevels'] = self.sbZLevels.GetValue()
         self.cfg['cam_zstep'] = self.sbZStep.GetValue()
@@ -351,6 +359,28 @@ class CameraControl(wx.Panel):
             self.run_thread = CamRunThread(self, self.control)
 
         self.cfg['cam_id'] = cam_id
+        
+    def UpdateProgress(self, index):
+        self.prog.SetValue(index)
+        self.txtProg.SetLabel(f'{index} of {self.image_count}')
+    
+    def OnConfigChanged(self, e):
+        x_steps = self.sbXSteps.GetValue()
+        y_steps = self.sbYSteps.GetValue()
+        inc = self.sbInc.GetValue()
+        z_levels = self.sbZLevels.GetValue()
+        z_step = self.sbZStep.GetValue()
+        
+        x = x_steps * inc
+        y = y_steps * inc
+        area = x * y
+        
+        self.image_count = (x_steps+1) * (y_steps+1) * z_levels
+        
+        lbl = f'{x}x{y}mm {area}mm² {self.image_count} images'
+        
+        self.txtDetails.SetLabel(lbl)
+        self.prog.SetRange(self.image_count)
 
     def InitUI(self):
         vbox = wx.BoxSizer(wx.VERTICAL)
@@ -358,45 +388,44 @@ class CameraControl(wx.Panel):
         self.video = videoPanel(self)
         vbox.Add(self.video, proportion=1, flag=wx.EXPAND)
 
-        gs = wx.GridBagSizer(3,9)
+        gs = wx.GridBagSizer(5,9)
 
         self.btnInitCamera = wx.Button(self, label='Init Camera')
         self.btnInitCamera.Bind(wx.EVT_BUTTON, self.OnInitCamera)
         gs.Add(self.btnInitCamera, (0,0), span=(0,2), flag=wx.EXPAND)
-
-        # self.btnGetImage = wx.Button(self, label='GetImage')
-        # self.btnGetImage.Bind(wx.EVT_BUTTON, self.OnGetImage)
-        # gs.Add(self.btnGetImage, (0,0), flag=wx.EXPAND)
 
         self.sbCamera = wx.SpinCtrl(self, min=0, max=99, initial=0)
         gs.Add(wx.StaticText(self, label='Camera ID'), (1, 0), flag=wx.ALIGN_CENTER_VERTICAL)
         self.sbCamera.SetValue(self.cfg.get('cam_id', 0))
         gs.Add(self.sbCamera, (1, 1))
 
-        self.sbWidth = wx.SpinCtrlDouble(self, min=1, max=1000, initial=self.cfg.get('cam_width', 50), inc=5)
-        self.sbWidth.SetDigits(2)
-        self.sbWidth.SetSizeHints((75, -1))
-        gs.Add(wx.StaticText(self, label='Width (mm)'), (0, 3), flag=wx.ALIGN_CENTER_VERTICAL)
-        gs.Add(self.sbWidth, (0, 4))
+        self.sbXSteps = wx.SpinCtrl(self, min=1, max=100000, initial=self.cfg.get('cam_xstep', 50))
+        self.sbXSteps.Bind(wx.EVT_SPINCTRL, self.OnConfigChanged)
+        self.sbXSteps.SetSizeHints((75, -1))
+        gs.Add(wx.StaticText(self, label='X Steps'), (0, 3), flag=wx.ALIGN_CENTER_VERTICAL)
+        gs.Add(self.sbXSteps, (0, 4))
 
-        self.sbHeight = wx.SpinCtrlDouble(self, min=1, max=1000, initial=self.cfg.get('cam_height', 50), inc=5)
-        self.sbHeight.SetDigits(2)
-        self.sbHeight.SetSizeHints((75, -1))
-        gs.Add(wx.StaticText(self, label='Height (mm)'), (1, 3), flag=wx.ALIGN_CENTER_VERTICAL)
-        gs.Add(self.sbHeight, (1, 4))
+        self.sbYSteps = wx.SpinCtrl(self, min=1, max=100000, initial=self.cfg.get('cam_ystep', 50))
+        self.sbYSteps.Bind(wx.EVT_SPINCTRL, self.OnConfigChanged)
+        self.sbYSteps.SetSizeHints((75, -1))
+        gs.Add(wx.StaticText(self, label='Y Steps'), (1, 3), flag=wx.ALIGN_CENTER_VERTICAL)
+        gs.Add(self.sbYSteps, (1, 4))
 
-        self.sbInc = wx.SpinCtrlDouble(self, min=1, max=50, initial=self.cfg.get('cam_inc', 1), inc=0.1)
-        self.sbInc.SetDigits(2)
+        self.sbInc = wx.SpinCtrlDouble(self, min=1, max=50, initial=self.cfg.get('cam_inc', 1), inc=1)
+        self.sbInc.Bind(wx.EVT_SPINCTRLDOUBLE, self.OnConfigChanged)
+        self.sbInc.SetDigits(1)
         self.sbInc.SetSizeHints((75, -1))
         gs.Add(wx.StaticText(self, label='Inc (mm)'), (2, 3), flag=wx.ALIGN_CENTER_VERTICAL)
         gs.Add(self.sbInc, (2, 4))
 
         self.sbZLevels = wx.SpinCtrl(self, min=1, max=100, initial=self.cfg.get('cam_zlevels', 1))
+        self.sbZLevels.Bind(wx.EVT_SPINCTRL, self.OnConfigChanged)
         self.sbZLevels.SetSizeHints((55, -1))
         gs.Add(wx.StaticText(self, label='Z Levels'), (0, 5), flag=wx.ALIGN_CENTER_VERTICAL)
         gs.Add(self.sbZLevels, (0, 6))
 
         self.sbZStep = wx.SpinCtrlDouble(self, min=-10, max=10, initial=self.cfg.get('cam_zstep', 0), inc=0.1)
+        self.sbZStep.Bind(wx.EVT_SPINCTRLDOUBLE, self.OnConfigChanged)
         self.sbZStep.SetDigits(1)
         self.sbZStep.SetSizeHints((55, -1))
         gs.Add(wx.StaticText(self, label='Z Step (mm)'), (1, 5), flag=wx.ALIGN_CENTER_VERTICAL)
@@ -419,39 +448,64 @@ class CameraControl(wx.Panel):
         gs.Add(self.btnOut, (2,5), flag=wx.EXPAND)
         self.txtOutDir = wx.TextCtrl(self, value=self.cfg.get('cam_outdir', ''), style=wx.TE_READONLY)
         gs.Add(self.txtOutDir, (2,6), span=(0,3), flag=wx.EXPAND)
+        
+        self.txtDetails = wx.StaticText(self, label='')
+        gs.Add(self.txtDetails, (3, 3), span=(0,4), flag=wx.ALIGN_CENTER_VERTICAL)
+        
+        self.txtProg = wx.StaticText(self, label='Status: Idle')
+        gs.Add(self.txtProg, (4, 0), span=(0,3), flag=wx.ALIGN_CENTER_HORIZONTAL)
+        
+        self.prog = wx.Gauge(self)
+        gs.Add(self.prog, (4, 3), span=(0,6), flag=wx.EXPAND)
 
         vbox.Add(gs, proportion=0, flag=wx.ALL, border=5)
         self.SetSizer(vbox)
 
-    def CaptureComplete(self):
+    def CaptureComplete(self, state):
         self.btnStart.SetLabel('Start')
+        if state:
+            wx.MessageBox(f'Scan Complete!', 'Scan Complete!', wx.OK | wx.ICON_INFORMATION)
+        self.DoComplete()
+            
+    def DoComplete(self):
+        self.prog.SetValue(0)
+        self.txtProg.SetLabel('Status: Idle')
 
     def OnStop(self, e):
         if self.control.Connected() and self.run_thread:
             self.run_thread.stop_cap = True
             self.btnStart.SetLabel('Start')
+            self.DoComplete()
 
     def OnStartPause(self, e):
         if self.control.Connected() and self.run_thread:
             if self.run_thread.running_cap:
-                self.run_thread.pause = True
-                self.btnStart.SetLabel('Start')
+                if self.run_thread.pause:
+                    self.run_thread.pause = False
+                    self.btnStart.SetLabel('Pause')
+                    self.txtProg.SetLabel('Status: Paused')
+                else:
+                    self.run_thread.pause = True
+                    self.btnStart.SetLabel('Start')
+                    self.txtProg.SetLabel('Status: Paused')
             else:
                 if self.control.Connected() and self.run_thread:
-                    w = self.sbWidth.GetValue()
-                    h = self.sbHeight.GetValue()
+                    xsteps = self.sbXSteps.GetValue()
+                    ysteps = self.sbYSteps.GetValue()
                     inc = self.sbInc.GetValue()
                     z_levels = self.sbZLevels.GetValue()
                     z_step = self.sbZStep.GetValue()
                     out_dir = self.txtOutDir.GetValue()
-                    self.run_thread.do_run_capture(w, h, inc, z_levels, z_step, out_dir)
+                    self.prog.SetValue(0)
+                    self.run_thread.do_run_capture(xsteps, ysteps, inc, z_levels, z_step, out_dir)
                     self.btnStart.SetLabel('Pause')
 
     def OnFrame(self, e):
         if self.control.Connected() and self.run_thread:
-            w = self.sbWidth.GetValue()
-            h = self.sbHeight.GetValue()
-            self.run_thread.do_frame(w, h)
+            x = self.sbXSteps.GetValue()
+            y = self.sbYSteps.GetValue()
+            inc = self.sbInc.GetValue()
+            self.run_thread.do_frame(x, y, inc)
 
     def OnChooseDir(self, e):
         print('Out Dir')

@@ -95,8 +95,8 @@ class Control():
         print("%-15s - %s" % (field, text))
 
     def on_send(self, command, gline):
-        self.__write("on_send", command)
         if command == '?': return
+        self.__write("on_send", command)
         for cb in self.get_callbacks('on_control_send'):
             cb(command, gline)
 
@@ -106,8 +106,9 @@ class Control():
 
     def on_recv(self, line):
         line = line.strip()
-        self.__write("on_recv", line)
         if line.startswith('ok'): return
+        if not line.startswith('<'):
+            self.__write("on_recv", line)
         if self.ParsePosition(line):
             self.on_status(self.pos)
             return
@@ -186,8 +187,6 @@ class Control():
             self.pos = []
             for i in range(len(res)):
                 self.pos.append(res[i])
-
-        print(self.pos)
 
         return True
 
